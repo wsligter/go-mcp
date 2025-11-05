@@ -34,6 +34,9 @@ import (
 // ProtocolVersion defines the protocol version this implementation supports.
 const ProtocolVersion = "2024-11-05"
 
+// SupportedProtocolVersions lists all protocol versions this implementation supports.
+var SupportedProtocolVersions = []string{"2024-11-05", "2025-06-18"}
+
 var jsonschemaReflector = jsonschema.Reflector{
 	Anonymous:      true,
 	ExpandedStruct: true,
@@ -398,10 +401,18 @@ func (s *Server) handleInitializeRequest(ctx context.Context, params InitializeP
 		return nil, jsonrpc.ErrAlreadyInitialized
 	}
 
-	if params.ProtocolVersion != ProtocolVersion {
+	// Check if the requested protocol version is supported
+	supported := false
+	for _, v := range SupportedProtocolVersions {
+		if params.ProtocolVersion == v {
+			supported = true
+			break
+		}
+	}
+	if !supported {
 		return nil, jsonrpc.ErrInvalidParams.WithData(map[string]any{
 			"detail":    "Unsupported protocol version.",
-			"supported": []string{ProtocolVersion},
+			"supported": SupportedProtocolVersions,
 			"requested": params.ProtocolVersion,
 		})
 	}
