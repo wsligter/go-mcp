@@ -125,10 +125,21 @@ func main() {
 }
 
 func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
+	// Handle GET for SSE stream (Streamable HTTP requirement)
+	if r.Method == http.MethodGet {
+		handleSSEStream(w, r)
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Check Accept header for Streamable HTTP compliance
+	acceptHeader := r.Header.Get("Accept")
+	supportsSSE := strings.Contains(acceptHeader, "text/event-stream")
+	supportsJSON := strings.Contains(acceptHeader, "application/json")
 
 	// Read request body
 	body, err := io.ReadAll(r.Body)
@@ -146,7 +157,7 @@ func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("MCP Request: method=%s, id=%v", req.Method, req.ID)
+	log.Printf("MCP Request: method=%s, id=%v, supportsSSE=%v", req.Method, req.ID, supportsSSE)
 
 	// Handle the request based on method
 	ctx := r.Context()
@@ -178,15 +189,53 @@ func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send response
+	// Send response - use SSE if client supports it and it's a request (not notification)
 	response := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
 		Result:  result,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	// For Streamable HTTP: if client accepts SSE and this is a request, we CAN use SSE
+	// But for simplicity and stateless design, we'll just use JSON for now
+	// Copilot Studio should work with either
+	if supportsSSE && req.ID != nil && supportsJSON {
+		// Client supports both - use JSON for simplicity (stateless)
+		w.Header().Set("Content-Type", "application/json")
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	
 	json.NewEncoder(w).Encode(response)
+}
+
+// handleSSEStream handles GET requests for SSE streams
+// Per Streamable HTTP spec, server MAY support GET for server-initiated messages
+func handleSSEStream(w http.ResponseWriter, r *http.Request) {
+	// Check if client accepts SSE
+	acceptHeader := r.Header.Get("Accept")
+	if !strings.Contains(acceptHeader, "text/event-stream") {
+		http.Error(w, "This endpoint requires Accept: text/event-stream for GET requests", http.StatusNotAcceptable)
+		return
+	}
+
+	log.Printf("SSE stream requested via GET")
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// For stateless design, we don't maintain long-lived SSE connections
+	// Just return a comment and close
+	// A full implementation would keep the connection open and send notifications
+	fmt.Fprintf(w, ": MCP server ready (stateless mode - no persistent SSE)\n\n")
+	
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	
+	log.Printf("SSE stream closed (stateless mode)")
 }
 
 func sendJSONRPCError(w http.ResponseWriter, id interface{}, code int, message string) {
