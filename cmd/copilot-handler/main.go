@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -31,6 +32,31 @@ const (
 	serverVersion = "0.1.0"
 )
 
+// JSON-RPC types
+type JSONRPCRequest struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      interface{}     `json:"id"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+type JSONRPCResponse struct {
+	JSONRPC string      `json:"jsonrpc"`
+	ID      interface{} `json:"id"`
+	Result  interface{} `json:"result,omitempty"`
+	Error   *JSONRPCError `json:"error,omitempty"`
+}
+
+type JSONRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+var (
+	mcpServer *mcp.Server
+	tools     map[string]mcp.Tool
+)
+
 func main() {
 	// Get port from environment variable
 	port := os.Getenv("PORT")
@@ -40,8 +66,8 @@ func main() {
 
 	ctx := context.Background()
 
-	// Create MCP server WITHOUT SSE transport (Copilot Studio uses HTTP POST)
-	mcpServer := mcp.NewServer(mcp.ServerConfig{
+	// Create MCP server
+	mcpServer = mcp.NewServer(mcp.ServerConfig{
 		Name:                    serverName,
 		Version:                 serverVersion,
 		ListResourcesFn:         handleListResourcesRequest,
@@ -74,19 +100,7 @@ func main() {
 	}))
 
 	// Create HTTP handler for Copilot Studio (Streamable transport)
-	http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		// Set headers for streaming response
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Transfer-Encoding", "chunked")
-
-		// Handle the MCP request
-		mcpServer.ServeHTTP(w, r)
-	})
+	http.HandleFunc("/mcp", handleMCPRequest)
 
 	// Health check endpoint
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +114,10 @@ func main() {
 
 	// Root endpoint with info
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"name":        serverName,
@@ -119,6 +137,174 @@ func main() {
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("HTTP server error: %v", err)
 	}
+}
+
+func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		sendJSONRPCError(w, nil, -32700, "Parse error")
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse JSON-RPC request
+	var req JSONRPCRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		sendJSONRPCError(w, nil, -32700, "Parse error")
+		return
+	}
+
+	// Handle the request based on method
+	ctx := r.Context()
+	var result interface{}
+
+	switch req.Method {
+	case "initialize":
+		result = handleInitialize(ctx, req.Params)
+	case "tools/list":
+		result = handleToolsList(ctx, req.Params)
+	case "tools/call":
+		result = handleToolsCall(ctx, req.Params)
+	case "resources/list":
+		result = handleResourcesList(ctx, req.Params)
+	case "resources/read":
+		result = handleResourcesRead(ctx, req.Params)
+	case "prompts/list":
+		result = handlePromptsList(ctx, req.Params)
+	default:
+		sendJSONRPCError(w, req.ID, -32601, fmt.Sprintf("Method not found: %s", req.Method))
+		return
+	}
+
+	// Send response
+	response := JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      req.ID,
+		Result:  result,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func sendJSONRPCError(w http.ResponseWriter, id interface{}, code int, message string) {
+	response := JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &JSONRPCError{
+			Code:    code,
+			Message: message,
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK) // JSON-RPC errors still return 200
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleInitialize(ctx context.Context, params json.RawMessage) interface{} {
+	return map[string]interface{}{
+		"protocolVersion": "2024-11-05",
+		"capabilities": map[string]interface{}{
+			"tools":     map[string]interface{}{},
+			"resources": map[string]interface{}{},
+			"prompts":   map[string]interface{}{},
+		},
+		"serverInfo": map[string]string{
+			"name":    serverName,
+			"version": serverVersion,
+		},
+	}
+}
+
+func handleToolsList(ctx context.Context, params json.RawMessage) interface{} {
+	return map[string]interface{}{
+		"tools": []map[string]interface{}{
+			{
+				"name":        "get_weather",
+				"description": "Get current weather information for a location",
+				"inputSchema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"location": map[string]interface{}{
+							"type":        "string",
+							"description": "The location to get weather for",
+						},
+					},
+					"required": []string{"location"},
+				},
+			},
+		},
+	}
+}
+
+func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
+	var callParams struct {
+		Name      string                 `json:"name"`
+		Arguments map[string]interface{} `json:"arguments"`
+	}
+	
+	if err := json.Unmarshal(params, &callParams); err != nil {
+		return map[string]interface{}{
+			"isError": true,
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": "Invalid parameters",
+				},
+			},
+		}
+	}
+
+	if callParams.Name == "get_weather" {
+		location, ok := callParams.Arguments["location"].(string)
+		if !ok {
+			location = "Unknown"
+		}
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": fmt.Sprintf("The weather in %s is sunny with a temperature of 22°C.", location),
+				},
+			},
+		}
+	}
+
+	return map[string]interface{}{
+		"isError": true,
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": "Tool not found",
+			},
+		},
+	}
+}
+
+func handleResourcesList(ctx context.Context, params json.RawMessage) interface{} {
+	result, _ := handleListResourcesRequest(ctx, mcp.ListResourcesParams{})
+	return result
+}
+
+func handleResourcesRead(ctx context.Context, params json.RawMessage) interface{} {
+	var readParams struct {
+		URI string `json:"uri"`
+	}
+	json.Unmarshal(params, &readParams)
+	
+	result, _ := handleReadResourceRequest(ctx, mcp.ReadResourceParams{URI: readParams.URI})
+	return result
+}
+
+func handlePromptsList(ctx context.Context, params json.RawMessage) interface{} {
+	result, _ := handleListPromptsRequest(ctx, mcp.ListPromptsParams{})
+	return result
 }
 
 func handleListResourcesRequest(ctx context.Context, req mcp.ListResourcesParams) (*mcp.ListResourcesResult, error) {
