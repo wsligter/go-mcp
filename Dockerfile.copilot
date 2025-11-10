@@ -11,7 +11,7 @@ RUN go mod download
 COPY . .
 
 # Build the Copilot Studio compatible application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o mcp-server ./cmd/copilot-handler/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o mcp-server ./cmd/copilot-handler/
 
 # Runtime stage
 FROM alpine:latest
