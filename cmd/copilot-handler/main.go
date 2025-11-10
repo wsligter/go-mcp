@@ -196,11 +196,18 @@ func handleInitialize(ctx context.Context, params json.RawMessage) interface{} {
 	return map[string]interface{}{
 		"protocolVersion": "2024-11-05",
 		"capabilities": map[string]interface{}{
-			"tools":     map[string]interface{}{},
-			"resources": map[string]interface{}{},
-			"prompts":   map[string]interface{}{},
+			"tools": map[string]interface{}{
+				"listChanged": true,
+			},
+			"resources": map[string]interface{}{
+				"subscribe":   false,
+				"listChanged": true,
+			},
+			"prompts": map[string]interface{}{
+				"listChanged": true,
+			},
 		},
-		"serverInfo": map[string]string{
+		"serverInfo": map[string]interface{}{
 			"name":    serverName,
 			"version": serverVersion,
 		},
