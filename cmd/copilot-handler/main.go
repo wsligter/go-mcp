@@ -223,11 +223,11 @@ func handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	// Just return a comment and close
 	// A full implementation would keep the connection open and send notifications
 	fmt.Fprintf(w, ": MCP server ready (stateless mode - no persistent SSE)\n\n")
-	
+
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
-	
+
 	log.Printf("SSE stream closed (stateless mode)")
 }
 
@@ -247,7 +247,7 @@ func sendJSONRPCError(w http.ResponseWriter, id interface{}, code int, message s
 
 func handleInitialize(ctx context.Context, params json.RawMessage) interface{} {
 	log.Printf("Initialize called - returning capabilities and server info")
-	
+
 	return map[string]interface{}{
 		"protocolVersion": "2024-11-05",
 		"capabilities": map[string]interface{}{
@@ -266,7 +266,26 @@ func handleInitialize(ctx context.Context, params json.RawMessage) interface{} {
 			"name":    serverName,
 			"version": serverVersion,
 		},
-		"instructions": "This server provides access to CBS (Statistics Netherlands) Open Data API. Use get_catalogs to list available catalogs, query_datasets to search datasets, get_dimensions to explore dataset structure, and query_observations to retrieve statistical data.",
+		"instructions": `CBS (Statistics Netherlands) Open Data API Access
+
+WORKFLOW FOR QUERYING CBS DATA:
+1. SEARCH: Use query_datasets with search parameter to find relevant datasets (e.g., search="population" or search="bevolking")
+2. FILTER: Always add filter="Status ne 'Gediscontinueerd'" to exclude discontinued datasets
+3. IDENTIFY: Note the dataset ID (e.g., "83765NED") from the results
+4. EXPLORE: Use get_dimensions with the dataset ID to see available dimensions (time periods, regions, etc.)
+5. QUERY: Use query_observations or get_observations with appropriate filters to get the actual data
+
+IMPORTANT TIPS:
+- Dataset titles are in Dutch. Common terms: "Bevolking" (population), "Economie" (economy), "Arbeidsmarkt" (labor market)
+- Use search parameter for free-text search across dataset titles and descriptions
+- Time dimensions are usually named "Perioden" (periods) with format like "2022JJ00" (year 2022)
+- Regional dimensions are usually "RegioS" (regions) with codes like "NL01" (Netherlands)
+- Always check dimensions first to understand available filters before querying observations
+
+EXAMPLE: To find 2022 Netherlands population:
+1. query_datasets(catalog="CBS", search="bevolking", filter="Status ne 'Gediscontinueerd'", top=5)
+2. get_dimensions(catalog="CBS", dataset="<ID from step 1>")
+3. query_observations(catalog="CBS", dataset="<ID>", filter="Perioden eq '2022JJ00' and RegioS eq 'NL01'")`,
 	}
 }
 
@@ -283,7 +302,7 @@ func handleToolsList(ctx context.Context, params json.RawMessage) interface{} {
 			},
 			{
 				"name":        "query_datasets",
-				"description": "Lists available datasets from CBS Open Data API with filtering, sorting, and pagination",
+				"description": "Search and list CBS datasets. ALWAYS use search parameter (e.g., search='bevolking' for population, search='economie' for economy). ALWAYS include filter='Status ne Gediscontinueerd' to exclude discontinued datasets. Returns dataset IDs needed for other tools.",
 				"inputSchema": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -313,7 +332,7 @@ func handleToolsList(ctx context.Context, params json.RawMessage) interface{} {
 			},
 			{
 				"name":        "get_dimensions",
-				"description": "Retrieves all dimensions (categories) for a specific CBS dataset",
+				"description": "REQUIRED BEFORE QUERYING DATA: Get all dimensions (Perioden=time, RegioS=regions, etc.) for a dataset. Use this to understand what filters are available. Returns dimension keys and codes needed for query_observations filters.",
 				"inputSchema": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -331,7 +350,7 @@ func handleToolsList(ctx context.Context, params json.RawMessage) interface{} {
 			},
 			{
 				"name":        "query_observations",
-				"description": "Queries statistical observations from a CBS dataset with filtering and sorting",
+				"description": "Get actual statistical data from a dataset. Use OData filters based on dimensions from get_dimensions. Example filters: Perioden eq '2022JJ00' (year 2022), RegioS eq 'NL01' (Netherlands), combine with 'and'. Always call get_dimensions first to see available filter values.",
 				"inputSchema": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -445,7 +464,7 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 		if err != nil {
 			return errorResponse(fmt.Sprintf("Failed to get catalogs: %v", err))
 		}
-		
+
 		var text strings.Builder
 		text.WriteString(fmt.Sprintf("Found %d CBS catalogs:\n\n", len(catalogs)))
 		for i, cat := range catalogs {
@@ -455,7 +474,7 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 			}
 			text.WriteString("\n")
 		}
-		
+
 		return successResponse(text.String())
 
 	case "query_datasets":
@@ -463,7 +482,7 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 		if catalog == "" {
 			return errorResponse("catalog parameter is required")
 		}
-		
+
 		queryOpts := make(map[string]string)
 		if filter, ok := callParams.Arguments["filter"].(string); ok && filter != "" {
 			queryOpts["$filter"] = filter
@@ -480,42 +499,42 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 			queryOpts["$skip"] = fmt.Sprintf("%.0f", skip)
 		}
 		queryOpts["$count"] = "true"
-		
+
 		datasets, totalCount, err := client.GetDatasetsWithQuery(catalog, queryOpts)
 		if err != nil {
 			return errorResponse(fmt.Sprintf("Failed to query datasets: %v", err))
 		}
-		
+
 		skip := 0
 		if s, ok := callParams.Arguments["skip"].(float64); ok {
 			skip = int(s)
 		}
-		
+
 		return successResponse(FormatDatasets(datasets, totalCount, skip))
 
 	case "get_dimensions":
 		catalog, _ := callParams.Arguments["catalog"].(string)
 		dataset, _ := callParams.Arguments["dataset"].(string)
-		
+
 		if catalog == "" || dataset == "" {
 			return errorResponse("catalog and dataset parameters are required")
 		}
-		
+
 		dimensions, err := client.GetDimensions(catalog, dataset)
 		if err != nil {
 			return errorResponse(fmt.Sprintf("Failed to get dimensions: %v", err))
 		}
-		
+
 		return successResponse(FormatDimensions(dimensions))
 
 	case "query_observations":
 		catalog, _ := callParams.Arguments["catalog"].(string)
 		dataset, _ := callParams.Arguments["dataset"].(string)
-		
+
 		if catalog == "" || dataset == "" {
 			return errorResponse("catalog and dataset parameters are required")
 		}
-		
+
 		queryOpts := make(map[string]string)
 		if filter, ok := callParams.Arguments["filter"].(string); ok && filter != "" {
 			queryOpts["$filter"] = filter
@@ -528,33 +547,33 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 		} else {
 			queryOpts["$top"] = "100" // Default
 		}
-		
+
 		path := fmt.Sprintf("/%s/%s/Observations", catalog, dataset)
 		result, err := client.ExecuteQuery(path, queryOpts)
 		if err != nil {
 			return errorResponse(fmt.Sprintf("Failed to query observations: %v", err))
 		}
-		
+
 		limit := 100
 		if top, ok := callParams.Arguments["top"].(float64); ok && top > 0 {
 			limit = int(top)
 		}
-		
+
 		formatted, err := FormatObservations(result, limit)
 		if err != nil {
 			return errorResponse(fmt.Sprintf("Failed to format observations: %v", err))
 		}
-		
+
 		return successResponse(formatted)
 
 	case "get_observations":
 		catalog, _ := callParams.Arguments["catalog"].(string)
 		dataset, _ := callParams.Arguments["dataset"].(string)
-		
+
 		if catalog == "" || dataset == "" {
 			return errorResponse("catalog and dataset parameters are required")
 		}
-		
+
 		// Extract filters if provided
 		filters := make(map[string]string)
 		if filtersArg, ok := callParams.Arguments["filters"].(map[string]interface{}); ok {
@@ -564,12 +583,12 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 				}
 			}
 		}
-		
+
 		observations, err := client.GetObservations(catalog, dataset, filters)
 		if err != nil {
 			return errorResponse(fmt.Sprintf("Failed to get observations: %v", err))
 		}
-		
+
 		// Apply limit if specified
 		limit := len(observations)
 		if limitArg, ok := callParams.Arguments["limit"].(float64); ok && limitArg > 0 {
@@ -578,11 +597,11 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 				limit = len(observations)
 			}
 		}
-		
+
 		limitedObs := observations[:limit]
 		obsJSON, _ := json.Marshal(limitedObs)
-		
-		return successResponse(fmt.Sprintf("Retrieved %d observations (showing %d):\n\n```json\n%s\n```", 
+
+		return successResponse(fmt.Sprintf("Retrieved %d observations (showing %d):\n\n```json\n%s\n```",
 			len(observations), limit, string(obsJSON)))
 
 	case "get_metadata":
@@ -590,31 +609,31 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 		if err != nil {
 			return errorResponse(fmt.Sprintf("Failed to get metadata: %v", err))
 		}
-		
+
 		// Truncate if too long
 		if len(metadata) > 5000 {
 			metadata = metadata[:5000] + "\n\n... (truncated)"
 		}
-		
+
 		return successResponse(fmt.Sprintf("CBS API Metadata:\n\n```xml\n%s\n```", metadata))
 
 	case "get_dimension_values":
 		catalog, _ := callParams.Arguments["catalog"].(string)
 		dataset, _ := callParams.Arguments["dataset"].(string)
 		dimension, _ := callParams.Arguments["dimension"].(string)
-		
+
 		if catalog == "" || dataset == "" || dimension == "" {
 			return errorResponse("catalog, dataset, and dimension parameters are required")
 		}
-		
+
 		queryOpts := make(map[string]string)
 		values, err := client.GetDimensionValues(catalog, dataset, dimension, queryOpts)
 		if err != nil {
 			return errorResponse(fmt.Sprintf("Failed to get dimension values: %v", err))
 		}
-		
+
 		valuesJSON, _ := json.Marshal(values)
-		return successResponse(fmt.Sprintf("Found %d values for dimension '%s':\n\n```json\n%s\n```", 
+		return successResponse(fmt.Sprintf("Found %d values for dimension '%s':\n\n```json\n%s\n```",
 			len(values), dimension, string(valuesJSON)))
 	}
 

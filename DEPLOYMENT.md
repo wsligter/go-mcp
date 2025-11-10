@@ -1,410 +1,121 @@
 # Deployment Guide
 
-Complete guide for deploying the MCP server to Azure Container Apps.
+## Azure Container Apps Deployment
 
-## Prerequisites
+### Prerequisites
 
-- [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) installed
-- [Docker](https://docs.docker.com/get-docker/) installed (for local testing)
-- Azure subscription with appropriate permissions
+- Azure CLI installed and logged in
+- Azure Container Registry
+- Azure Container Apps environment
 
-## Quick Start
-
-### 1. Set Environment Variables
+### Build and Deploy
 
 ```bash
-SUBSCRIPTION="Kodify - Partner Subscription (experiments & presales)"
-RESOURCE_GROUP="Roodhals-PoC"
-CONTAINER_APP_NAME="roodhals-mcp"
-REGISTRY_NAME="roodhalsmcp"
-LOCATION="westeurope"
-CONTAINER_APP_ENV="roodhals-mcp-env"
-```
-
-### 2. Login and Set Subscription
-
-```bash
-az login
-az account set --subscription "$SUBSCRIPTION"
-```
-
-### 3. Create Resources (First Time Only)
-
-```bash
-# Create resource group
-az group create \
-  --name "$RESOURCE_GROUP" \
-  --location "$LOCATION"
-
-# Create Azure Container Registry
-az acr create \
-  --resource-group "$RESOURCE_GROUP" \
-  --name "$REGISTRY_NAME" \
-  --sku Basic \
-  --location "$LOCATION" \
-  --admin-enabled true
-
-# Create Container Apps environment
-az containerapp env create \
-  --name "$CONTAINER_APP_ENV" \
-  --resource-group "$RESOURCE_GROUP" \
-  --location "$LOCATION"
-```
-
-## Deployment Options
-
-### Option A: Deploy for Copilot Studio (Recommended)
-
-Use this for Microsoft Copilot Studio integration with Streamable transport.
-
-```bash
-# Build and push image
-az acr build \
-  --registry "$REGISTRY_NAME" \
+# 1. Build and push to Azure Container Registry
+az acr build --registry roodhalsmcp \
   --image mcp-server:copilot \
   --file Dockerfile.copilot .
 
-# Create or update Container App
-az containerapp create \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --environment "$CONTAINER_APP_ENV" \
-  --image "$REGISTRY_NAME.azurecr.io/mcp-server:copilot" \
-  --target-port 8080 \
-  --ingress external \
-  --registry-server "$REGISTRY_NAME.azurecr.io" \
-  --query properties.configuration.ingress.fqdn \
-  --output tsv
-```
-
-**If the app already exists, use update instead:**
-
-```bash
+# 2. Update Container App
 az containerapp update \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --image "$REGISTRY_NAME.azurecr.io/mcp-server:copilot"
+  --name roodhals-mcp \
+  --resource-group Roodhals-PoC
 ```
 
-### Option B: Deploy Standard Version (SSE Transport)
-
-Use this for MCP clients like Claude Desktop, VS Code extensions, etc.
+### Verify Deployment
 
 ```bash
-# Build and push image
-az acr build \
-  --registry "$REGISTRY_NAME" \
-  --image mcp-server:latest \
-  --file Dockerfile .
+# Check logs
+az containerapp logs show \
+  --name roodhals-mcp \
+  --resource-group Roodhals-PoC \
+  --type console \
+  --tail 20
 
-# Create or update Container App
-az containerapp create \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --environment "$CONTAINER_APP_ENV" \
-  --image "$REGISTRY_NAME.azurecr.io/mcp-server:latest" \
-  --target-port 8080 \
-  --ingress external \
-  --registry-server "$REGISTRY_NAME.azurecr.io" \
-  --query properties.configuration.ingress.fqdn \
-  --output tsv
+# Test endpoint
+curl https://roodhals-mcp.ashysea-5e0ea900.westeurope.azurecontainerapps.io/health
 ```
 
-## Get Deployment URL
+## Copilot Studio Integration
+
+### Add MCP Server
+
+1. Open Copilot Studio
+2. Go to **Tools** → **Add a tool** → **Model Context Protocol**
+3. Enter server URL: `https://roodhals-mcp.ashysea-5e0ea900.westeurope.azurecontainerapps.io/mcp`
+4. Select **Streamable** transport
+5. Authentication: **None**
+6. Save
+
+### Test
+
+Ask Copilot: "What was the population of the Netherlands in 2022?"
+
+Expected behavior:
+1. Searches CBS datasets with `search="bevolking"`
+2. Gets dimensions from found dataset
+3. Queries observations with proper filters
+
+## Local Development
+
+### Run Locally
 
 ```bash
-az containerapp show \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --query properties.configuration.ingress.fqdn \
-  --output tsv
+# Build
+go build -o mcp-server ./cmd/copilot-handler/
+
+# Run
+./mcp-server
+# Starts on http://localhost:8080
 ```
 
-Example output: `roodhals-mcp.ashysea-5e0ea900.westeurope.azurecontainerapps.io`
-
-## Update Deployment
-
-When you make code changes, rebuild and redeploy:
+### Test Locally
 
 ```bash
-# For Copilot Studio version
-az acr build \
-  --registry "$REGISTRY_NAME" \
-  --image mcp-server:copilot \
-  --file Dockerfile.copilot .
-
-az containerapp update \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --image "$REGISTRY_NAME.azurecr.io/mcp-server:copilot"
-
-# Or for standard version
-az acr build \
-  --registry "$REGISTRY_NAME" \
-  --image mcp-server:latest \
-  --file Dockerfile .
-
-az containerapp update \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --image "$REGISTRY_NAME.azurecr.io/mcp-server:latest"
-```
-
-## Local Testing
-
-### Test Copilot Studio Version
-
-```bash
-# Build locally
-docker build -t mcp-server:copilot -f Dockerfile.copilot .
-
-# Run locally
-docker run -p 8080:8080 mcp-server:copilot
-
-# Test endpoints
-curl http://localhost:8080/health
-curl http://localhost:8080/
-```
-
-### Test Standard Version
-
-```bash
-# Build locally
-docker build -t mcp-server:latest .
-
-# Run locally
-docker run -p 8080:8080 mcp-server:latest
-```
-
-## Verify Deployment
-
-### Check Health
-
-```bash
-FQDN=$(az containerapp show \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --query properties.configuration.ingress.fqdn \
-  --output tsv)
-
-curl https://$FQDN/health
-```
-
-### Test MCP Endpoint (Copilot Studio version)
-
-```bash
-curl -X POST https://$FQDN/mcp \
+# Initialize
+curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "initialize",
-    "params": {
-      "protocolVersion": "2024-11-05",
-      "capabilities": {},
-      "clientInfo": {"name": "test", "version": "1.0"}
-    },
-    "id": 1
-  }'
-```
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
 
-## View Logs
+# List tools
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}'
 
-```bash
-# Stream logs
-az containerapp logs show \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --follow
-
-# View recent logs
-az containerapp logs show \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --tail 100
-```
-
-## Scaling Configuration
-
-Container Apps auto-scales by default. To configure:
-
-```bash
-# Set min/max replicas
-az containerapp update \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --min-replicas 0 \
-  --max-replicas 10
+# Call tool
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_catalogs","arguments":{}},"id":3}'
 ```
 
 ## Environment Variables
 
-Add environment variables to your deployment:
-
-```bash
-az containerapp update \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --set-env-vars "KEY1=value1" "KEY2=value2"
-```
-
-## Cost Management
-
-### View Current Costs
-
-```bash
-az consumption usage list \
-  --start-date $(date -u -d '30 days ago' '+%Y-%m-%d') \
-  --end-date $(date -u '+%Y-%m-%d') \
-  | jq '[.[] | select(.instanceName | contains("roodhals-mcp"))]'
-```
-
-### Estimated Monthly Costs
-
-- **Container Apps (Consumption)**: ~$0 for low traffic (first 180,000 vCPU-seconds free)
-- **Container Registry (Basic)**: ~$5/month
-- **Log Analytics**: ~$2-5/month (depending on usage)
-
-**Total**: ~$7-10/month for low-traffic usage
-
-### Stop Container App (to save costs)
-
-```bash
-# Scale to 0 replicas
-az containerapp update \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --min-replicas 0 \
-  --max-replicas 0
-```
-
-## Cleanup
-
-To delete all resources:
-
-```bash
-# Delete the entire resource group (removes everything)
-az group delete \
-  --name "$RESOURCE_GROUP" \
-  --yes \
-  --no-wait
-
-# Or delete individual resources
-az containerapp delete \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --yes
-
-az acr delete \
-  --name "$REGISTRY_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --yes
-```
+None required - server uses CBS public API.
 
 ## Troubleshooting
 
-### "Image not found" error
+### Tools not appearing in Copilot Studio
 
-Make sure the image was built and pushed:
+1. Refresh the MCP connection
+2. Check server logs for errors
+3. Verify URL is correct
+4. Ensure Generative Orchestration is enabled in Copilot Studio settings
+
+### Server errors
+
 ```bash
-az acr repository list --name "$REGISTRY_NAME" --output table
-az acr repository show-tags --name "$REGISTRY_NAME" --repository mcp-server --output table
-```
-
-### "Authentication failed" error
-
-Check ACR credentials are configured:
-```bash
-az acr credential show --name "$REGISTRY_NAME"
-```
-
-### Container not starting
-
-Check logs:
-```bash
+# Check logs
 az containerapp logs show \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --tail 50
-```
-
-### "Port already in use" (local testing)
-
-Kill the process using port 8080:
-```bash
-lsof -ti:8080 | xargs kill -9
-```
-
-## Next Steps
-
-- **For Copilot Studio**: See [COPILOT_STUDIO_SETUP.md](COPILOT_STUDIO_SETUP.md)
-- **For Docker details**: See [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md)
-- **For Azure Functions**: See [AZURE_DEPLOYMENT.md](AZURE_DEPLOYMENT.md)
-
-## Makefile Commands
-
-Quick commands for common tasks:
-
-```bash
-# Build Docker image locally
-make build-docker
-
-# Run Docker container locally
-make docker-run
-
-# Build for Azure Functions
-make build-azure
-
-# Clean up
-make clean
+  --name roodhals-mcp \
+  --resource-group Roodhals-PoC \
+  --type console \
+  --follow
 ```
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────┐
-│         Azure Container Apps                │
-│  ┌───────────────────────────────────────┐  │
-│  │  MCP Server Container                 │  │
-│  │  - Auto-scaling (0-10 replicas)       │  │
-│  │  - HTTPS ingress                      │  │
-│  │  - Health monitoring                  │  │
-│  └───────────────────────────────────────┘  │
-└─────────────────────────────────────────────┘
-                    ▲
-                    │
-┌─────────────────────────────────────────────┐
-│    Azure Container Registry (ACR)           │
-│    - Private Docker registry                │
-│    - Image: mcp-server:copilot              │
-└─────────────────────────────────────────────┘
-                    ▲
-                    │
-┌─────────────────────────────────────────────┐
-│         Local Development                   │
-│    - Build with Docker                      │
-│    - Push to ACR                            │
-│    - Deploy to Container Apps               │
-└─────────────────────────────────────────────┘
-```
-
-## Security Best Practices
-
-1. **Use managed identities** instead of admin credentials when possible
-2. **Enable HTTPS only** (already configured)
-3. **Restrict ingress** to specific IPs if needed:
-   ```bash
-   az containerapp ingress access-restriction set \
-     --name "$CONTAINER_APP_NAME" \
-     --resource-group "$RESOURCE_GROUP" \
-     --rule-name "allow-office" \
-     --ip-address "1.2.3.4/32" \
-     --action Allow
-   ```
-4. **Use secrets** for sensitive data instead of environment variables
-5. **Enable diagnostic logs** for monitoring
-
-## Support
-
-- Azure Container Apps: https://learn.microsoft.com/en-us/azure/container-apps/
-- MCP Specification: https://modelcontextprotocol.io/
-- Copilot Studio MCP: https://learn.microsoft.com/en-us/microsoft-copilot-studio/agent-extend-action-mcp
+- **Transport**: Streamable HTTP (MCP 2024-11-05)
+- **Design**: Stateless for horizontal scaling
+- **CBS API**: Direct HTTP calls to https://opendata.cbs.nl/ODataApi/odata
+- **Port**: 8080
+- **Health**: `/health` endpoint
