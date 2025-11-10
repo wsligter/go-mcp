@@ -1,0 +1,29 @@
+swagger: '2.0'
+info:
+  title: Roodhals MCP Server
+  description: Model Context Protocol server for Roodhals - provides weather tools and company data resources
+  version: 0.1.0
+host: roodhals-mcp.ashysea-5e0ea900.westeurope.azurecontainerapps.io
+basePath: /
+schemes:
+  - https
+paths:
+  /mcp:
+    post:
+      summary: Roodhals MCP Server
+      description: Model Context Protocol endpoint for Copilot Studio integration
+      x-ms-agentic-protocol: mcp-streamable-1.0
+      operationId: InvokeMCP
+      consumes:
+        - application/json
+      produces:
+        - application/json
+      responses:
+        '200':
+          description: Success
+          schema:
+            type: object
+        '400':
+          description: Bad Request
+        '500':
+          description: Internal Server Error
