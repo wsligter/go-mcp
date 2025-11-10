@@ -195,35 +195,9 @@ func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 		Result:  result,
 	}
 
-	// For Streamable HTTP: if client supports SSE and this is a request, use SSE format
-	// This might be what Copilot Studio expects
-	if supportsSSE && req.ID != nil {
-		log.Printf("Sending response as SSE stream for request id=%v", req.ID)
-		
-		// Send as SSE
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		
-		// Marshal response to JSON
-		jsonData, err := json.Marshal(response)
-		if err != nil {
-			sendJSONRPCError(w, req.ID, -32603, "Internal error")
-			return
-		}
-		
-		// Send as SSE data event
-		fmt.Fprintf(w, "data: %s\n\n", jsonData)
-		
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		
-		log.Printf("SSE response sent and stream closed")
-		return
-	}
-	
-	// Fall back to JSON for notifications or if SSE not supported
+	// Per Streamable HTTP spec: server MAY return either JSON or SSE
+	// For simplicity and stateless design, we use JSON for all responses
+	// SSE is only needed for streaming/incremental responses
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
