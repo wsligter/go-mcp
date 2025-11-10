@@ -5,6 +5,8 @@ on:
     branches:
       - azure-functions-deployment
   workflow_dispatch:
+    branches:
+      - azure-functions-deployment
 
 env:
   REGISTRY_NAME: 'roodhalsmcp'
