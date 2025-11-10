@@ -1,0 +1,14 @@
+.git
+.github
+.vscode
+.cursor
+.DS_Store
+examples/
+*.md
+LICENSE
+.golangci.yml
+.pre-commit-config.yaml
+handler
+host.json
+MCPFunction/
+.funcignore

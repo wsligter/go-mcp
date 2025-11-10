@@ -1,6 +1,8 @@
-# Azure Functions Deployment Guide
+# Azure Functions Deployment Guide (Custom Handler)
 
-This guide explains how to deploy the go-mcp server to Azure Functions.
+> **Note:** For easier deployment, consider using [Docker deployment](DOCKER_DEPLOYMENT.md) instead. Docker provides simpler configuration and works with Azure Container Apps, App Service, and AKS.
+
+This guide explains how to deploy the go-mcp server to Azure Functions using custom handlers.
 
 ## Prerequisites
 
