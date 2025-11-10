@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/dstotijn/go-mcp"
 )
@@ -80,24 +81,8 @@ func main() {
 
 	mcpServer.Start(ctx)
 
-	// Register example tool
-	type getWeatherArgs struct {
-		Location string `json:"location" jsonschema:"description=The location to get weather for"`
-	}
-
-	mcpServer.RegisterTools(mcp.CreateTool(mcp.ToolDef[getWeatherArgs]{
-		Name:        "get_weather",
-		Description: "Get current weather information for a location",
-		HandleFunc: func(ctx context.Context, args getWeatherArgs) *mcp.CallToolResult {
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{
-					mcp.TextContent{
-						Text: fmt.Sprintf("The weather in %v is sunny with a temperature of 22°C.", args.Location),
-					},
-				},
-			}
-		},
-	}))
+	// Register CBS API tools - no MCP registration needed for Copilot Studio
+	// Tools are exposed via JSON-RPC handlers below
 
 	// Create HTTP handler for Copilot Studio (Streamable transport)
 	http.HandleFunc("/mcp", handleMCPRequest)
@@ -226,17 +211,89 @@ func handleToolsList(ctx context.Context, params json.RawMessage) interface{} {
 	return map[string]interface{}{
 		"tools": []map[string]interface{}{
 			{
-				"name":        "get_weather",
-				"description": "Get current weather information for a location",
+				"name":        "get_catalogs",
+				"description": "Retrieves all available CBS data catalogs",
+				"inputSchema": map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+			{
+				"name":        "query_datasets",
+				"description": "Lists available datasets from CBS Open Data API with filtering, sorting, and pagination",
 				"inputSchema": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"location": map[string]interface{}{
+						"catalog": map[string]interface{}{
 							"type":        "string",
-							"description": "The location to get weather for",
+							"description": "Catalog identifier (use 'CBS')",
+						},
+						"filter": map[string]interface{}{
+							"type":        "string",
+							"description": "OData $filter parameter (e.g., \"Status ne 'Gediscontinueerd'\")",
+						},
+						"search": map[string]interface{}{
+							"type":        "string",
+							"description": "Free-text search term",
+						},
+						"top": map[string]interface{}{
+							"type":        "integer",
+							"description": "Limit number of results (default: 10)",
+						},
+						"skip": map[string]interface{}{
+							"type":        "integer",
+							"description": "Skip N results for pagination",
 						},
 					},
-					"required": []string{"location"},
+					"required": []string{"catalog"},
+				},
+			},
+			{
+				"name":        "get_dimensions",
+				"description": "Retrieves all dimensions (categories) for a specific CBS dataset",
+				"inputSchema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"catalog": map[string]interface{}{
+							"type":        "string",
+							"description": "Catalog identifier",
+						},
+						"dataset": map[string]interface{}{
+							"type":        "string",
+							"description": "Dataset identifier (e.g., '83765NED')",
+						},
+					},
+					"required": []string{"catalog", "dataset"},
+				},
+			},
+			{
+				"name":        "query_observations",
+				"description": "Queries statistical observations from a CBS dataset with filtering and sorting",
+				"inputSchema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"catalog": map[string]interface{}{
+							"type":        "string",
+							"description": "Catalog identifier",
+						},
+						"dataset": map[string]interface{}{
+							"type":        "string",
+							"description": "Dataset identifier",
+						},
+						"filter": map[string]interface{}{
+							"type":        "string",
+							"description": "OData $filter parameter",
+						},
+						"select": map[string]interface{}{
+							"type":        "string",
+							"description": "OData $select parameter (comma-separated fields)",
+						},
+						"top": map[string]interface{}{
+							"type":        "integer",
+							"description": "Limit number of results",
+						},
+					},
+					"required": []string{"catalog", "dataset"},
 				},
 			},
 		},
@@ -261,27 +318,138 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 		}
 	}
 
-	if callParams.Name == "get_weather" {
-		location, ok := callParams.Arguments["location"].(string)
-		if !ok {
-			location = "Unknown"
+	client := NewCBSClient()
+
+	switch callParams.Name {
+	case "get_catalogs":
+		catalogs, err := client.GetCatalogs()
+		if err != nil {
+			return errorResponse(fmt.Sprintf("Failed to get catalogs: %v", err))
 		}
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("The weather in %s is sunny with a temperature of 22°C.", location),
-				},
-			},
+		
+		var text strings.Builder
+		text.WriteString(fmt.Sprintf("Found %d CBS catalogs:\n\n", len(catalogs)))
+		for i, cat := range catalogs {
+			text.WriteString(fmt.Sprintf("%d. **%s** (ID: `%s`)\n", i+1, cat.Title, cat.Identifier))
+			if cat.Description != "" {
+				text.WriteString(fmt.Sprintf("   - %s\n", cat.Description))
+			}
+			text.WriteString("\n")
 		}
+		
+		return successResponse(text.String())
+
+	case "query_datasets":
+		catalog, _ := callParams.Arguments["catalog"].(string)
+		if catalog == "" {
+			return errorResponse("catalog parameter is required")
+		}
+		
+		queryOpts := make(map[string]string)
+		if filter, ok := callParams.Arguments["filter"].(string); ok && filter != "" {
+			queryOpts["$filter"] = filter
+		}
+		if search, ok := callParams.Arguments["search"].(string); ok && search != "" {
+			queryOpts["$search"] = search
+		}
+		if top, ok := callParams.Arguments["top"].(float64); ok && top > 0 {
+			queryOpts["$top"] = fmt.Sprintf("%.0f", top)
+		} else {
+			queryOpts["$top"] = "10" // Default
+		}
+		if skip, ok := callParams.Arguments["skip"].(float64); ok && skip > 0 {
+			queryOpts["$skip"] = fmt.Sprintf("%.0f", skip)
+		}
+		queryOpts["$count"] = "true"
+		
+		datasets, totalCount, err := client.GetDatasetsWithQuery(catalog, queryOpts)
+		if err != nil {
+			return errorResponse(fmt.Sprintf("Failed to query datasets: %v", err))
+		}
+		
+		skip := 0
+		if s, ok := callParams.Arguments["skip"].(float64); ok {
+			skip = int(s)
+		}
+		
+		return successResponse(FormatDatasets(datasets, totalCount, skip))
+
+	case "get_dimensions":
+		catalog, _ := callParams.Arguments["catalog"].(string)
+		dataset, _ := callParams.Arguments["dataset"].(string)
+		
+		if catalog == "" || dataset == "" {
+			return errorResponse("catalog and dataset parameters are required")
+		}
+		
+		dimensions, err := client.GetDimensions(catalog, dataset)
+		if err != nil {
+			return errorResponse(fmt.Sprintf("Failed to get dimensions: %v", err))
+		}
+		
+		return successResponse(FormatDimensions(dimensions))
+
+	case "query_observations":
+		catalog, _ := callParams.Arguments["catalog"].(string)
+		dataset, _ := callParams.Arguments["dataset"].(string)
+		
+		if catalog == "" || dataset == "" {
+			return errorResponse("catalog and dataset parameters are required")
+		}
+		
+		queryOpts := make(map[string]string)
+		if filter, ok := callParams.Arguments["filter"].(string); ok && filter != "" {
+			queryOpts["$filter"] = filter
+		}
+		if selectFields, ok := callParams.Arguments["select"].(string); ok && selectFields != "" {
+			queryOpts["$select"] = selectFields
+		}
+		if top, ok := callParams.Arguments["top"].(float64); ok && top > 0 {
+			queryOpts["$top"] = fmt.Sprintf("%.0f", top)
+		} else {
+			queryOpts["$top"] = "100" // Default
+		}
+		
+		path := fmt.Sprintf("/%s/%s/Observations", catalog, dataset)
+		result, err := client.ExecuteQuery(path, queryOpts)
+		if err != nil {
+			return errorResponse(fmt.Sprintf("Failed to query observations: %v", err))
+		}
+		
+		limit := 100
+		if top, ok := callParams.Arguments["top"].(float64); ok && top > 0 {
+			limit = int(top)
+		}
+		
+		formatted, err := FormatObservations(result, limit)
+		if err != nil {
+			return errorResponse(fmt.Sprintf("Failed to format observations: %v", err))
+		}
+		
+		return successResponse(formatted)
 	}
 
+	return errorResponse("Tool not found")
+}
+
+func successResponse(text string) map[string]interface{} {
+	return map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": text,
+			},
+		},
+	}
+}
+
+func errorResponse(message string) map[string]interface{} {
 	return map[string]interface{}{
 		"isError": true,
 		"content": []map[string]interface{}{
 			{
 				"type": "text",
-				"text": "Tool not found",
+				"text": message,
 			},
 		},
 	}
