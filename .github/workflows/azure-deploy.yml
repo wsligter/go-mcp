@@ -1,0 +1,40 @@
+name: Deploy to Azure Functions
+
+on:
+  push:
+    branches:
+      - azure-functions-deployment
+  workflow_dispatch:
+
+env:
+  AZURE_FUNCTIONAPP_NAME: 'mcp-function-app'  # Set your function app name
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
+  GO_VERSION: '1.24.0'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 'Checkout GitHub Action'
+      uses: actions/checkout@v4
+
+    - name: 'Setup Go'
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+
+    - name: 'Build custom handler'
+      run: |
+        GOOS=linux GOARCH=amd64 go build -o handler cmd/azure-handler/main.go
+        chmod +x handler
+
+    - name: 'Login to Azure'
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: 'Deploy to Azure Functions'
+      uses: Azure/functions-action@v1
+      with:
+        app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+        package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
