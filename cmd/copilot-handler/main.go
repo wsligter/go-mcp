@@ -141,9 +141,12 @@ func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 	// Parse JSON-RPC request
 	var req JSONRPCRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		log.Printf("Parse error: %v, body: %s", err, string(body))
 		sendJSONRPCError(w, nil, -32700, "Parse error")
 		return
 	}
+
+	log.Printf("MCP Request: method=%s, id=%v", req.Method, req.ID)
 
 	// Handle the request based on method
 	ctx := r.Context()
@@ -152,6 +155,10 @@ func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 	switch req.Method {
 	case "initialize":
 		result = handleInitialize(ctx, req.Params)
+	case "notifications/initialized":
+		// Client notification after initialize - no response needed
+		log.Printf("Client initialized notification received")
+		return
 	case "tools/list":
 		result = handleToolsList(ctx, req.Params)
 	case "tools/call":
@@ -162,7 +169,11 @@ func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 		result = handleResourcesRead(ctx, req.Params)
 	case "prompts/list":
 		result = handlePromptsList(ctx, req.Params)
+	case "ping":
+		// Health check
+		result = map[string]interface{}{"status": "ok"}
 	default:
+		log.Printf("Unknown method: %s", req.Method)
 		sendJSONRPCError(w, req.ID, -32601, fmt.Sprintf("Method not found: %s", req.Method))
 		return
 	}
