@@ -194,6 +194,139 @@ func (c *CBSClient) GetDimensions(catalog, identifier string) ([]Dimension, erro
 	return dimensionResp.Value, nil
 }
 
+// GetObservations retrieves observations from a dataset with optional filters.
+func (c *CBSClient) GetObservations(catalog, dataset string, filters map[string]string) ([]map[string]any, error) {
+	queryOptions := make(map[string]string)
+
+	// Build filter string from filters map
+	if len(filters) > 0 {
+		var filterParts []string
+		for key, value := range filters {
+			filterParts = append(filterParts, fmt.Sprintf("%s eq '%s'", key, value))
+		}
+		queryOptions["$filter"] = strings.Join(filterParts, " and ")
+	}
+
+	path := fmt.Sprintf("/%s/%s/Observations", catalog, dataset)
+	result, err := c.ExecuteQuery(path, queryOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract observations from response
+	observations, ok := result["value"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response format")
+	}
+
+	// Convert to slice of maps
+	var observationMaps []map[string]any
+	for _, obs := range observations {
+		if obsMap, ok := obs.(map[string]any); ok {
+			observationMaps = append(observationMaps, obsMap)
+		}
+	}
+
+	return observationMaps, nil
+}
+
+// GetMetadata retrieves the metadata document for the OData service.
+func (c *CBSClient) GetMetadata() (string, error) {
+	url := c.baseURL + "/$metadata"
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/xml")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to get metadata: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read metadata: %w", err)
+	}
+
+	return string(data), nil
+}
+
+// GetDimensionValues retrieves all values for a specific dimension.
+func (c *CBSClient) GetDimensionValues(catalog, dataset, dimension string, queryOptions map[string]string) ([]map[string]any, error) {
+	baseURL := fmt.Sprintf("%s/%s/%s/DimensionValues", c.baseURL, catalog, dataset)
+
+	// Build URL with query parameters
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse URL: %w", err)
+	}
+
+	// Add dimension filter
+	filterQuery := fmt.Sprintf("Dimension eq '%s'", dimension)
+
+	// Add OData query parameters
+	q := u.Query()
+	q.Set("$filter", filterQuery)
+	for key, value := range queryOptions {
+		if key != "filter" && key != "$filter" {
+			if strings.HasPrefix(key, "$") {
+				q.Set(key, value)
+			} else {
+				q.Set("$"+key, value)
+			}
+		}
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get dimension values: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal dimension values: %w", err)
+	}
+
+	// Extract values from response
+	values, ok := result["value"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response format")
+	}
+
+	// Convert to slice of maps
+	var valuesMaps []map[string]any
+	for _, val := range values {
+		if valMap, ok := val.(map[string]any); ok {
+			valuesMaps = append(valuesMaps, valMap)
+		}
+	}
+
+	return valuesMaps, nil
+}
+
 // ExecuteQuery executes an arbitrary OData query.
 func (c *CBSClient) ExecuteQuery(path string, queryOptions map[string]string) (map[string]any, error) {
 	baseURL := c.baseURL + path

@@ -359,6 +359,62 @@ func handleToolsList(ctx context.Context, params json.RawMessage) interface{} {
 					"required": []string{"catalog", "dataset"},
 				},
 			},
+			{
+				"name":        "get_observations",
+				"description": "Retrieve observations from a specific CBS dataset with optional filters",
+				"inputSchema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"catalog": map[string]interface{}{
+							"type":        "string",
+							"description": "Catalog identifier",
+						},
+						"dataset": map[string]interface{}{
+							"type":        "string",
+							"description": "Dataset identifier",
+						},
+						"filters": map[string]interface{}{
+							"type":        "object",
+							"description": "Optional filters as key-value pairs",
+						},
+						"limit": map[string]interface{}{
+							"type":        "integer",
+							"description": "Maximum number of observations to return",
+						},
+					},
+					"required": []string{"catalog", "dataset"},
+				},
+			},
+			{
+				"name":        "get_metadata",
+				"description": "Retrieves the OData metadata document describing the CBS API structure",
+				"inputSchema": map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+			{
+				"name":        "get_dimension_values",
+				"description": "Retrieves all possible values for a specific dimension in a dataset",
+				"inputSchema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"catalog": map[string]interface{}{
+							"type":        "string",
+							"description": "Catalog identifier",
+						},
+						"dataset": map[string]interface{}{
+							"type":        "string",
+							"description": "Dataset identifier",
+						},
+						"dimension": map[string]interface{}{
+							"type":        "string",
+							"description": "Dimension identifier",
+						},
+					},
+					"required": []string{"catalog", "dataset", "dimension"},
+				},
+			},
 		},
 	}
 }
@@ -490,6 +546,76 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 		}
 		
 		return successResponse(formatted)
+
+	case "get_observations":
+		catalog, _ := callParams.Arguments["catalog"].(string)
+		dataset, _ := callParams.Arguments["dataset"].(string)
+		
+		if catalog == "" || dataset == "" {
+			return errorResponse("catalog and dataset parameters are required")
+		}
+		
+		// Extract filters if provided
+		filters := make(map[string]string)
+		if filtersArg, ok := callParams.Arguments["filters"].(map[string]interface{}); ok {
+			for k, v := range filtersArg {
+				if strVal, ok := v.(string); ok {
+					filters[k] = strVal
+				}
+			}
+		}
+		
+		observations, err := client.GetObservations(catalog, dataset, filters)
+		if err != nil {
+			return errorResponse(fmt.Sprintf("Failed to get observations: %v", err))
+		}
+		
+		// Apply limit if specified
+		limit := len(observations)
+		if limitArg, ok := callParams.Arguments["limit"].(float64); ok && limitArg > 0 {
+			limit = int(limitArg)
+			if limit > len(observations) {
+				limit = len(observations)
+			}
+		}
+		
+		limitedObs := observations[:limit]
+		obsJSON, _ := json.Marshal(limitedObs)
+		
+		return successResponse(fmt.Sprintf("Retrieved %d observations (showing %d):\n\n```json\n%s\n```", 
+			len(observations), limit, string(obsJSON)))
+
+	case "get_metadata":
+		metadata, err := client.GetMetadata()
+		if err != nil {
+			return errorResponse(fmt.Sprintf("Failed to get metadata: %v", err))
+		}
+		
+		// Truncate if too long
+		if len(metadata) > 5000 {
+			metadata = metadata[:5000] + "\n\n... (truncated)"
+		}
+		
+		return successResponse(fmt.Sprintf("CBS API Metadata:\n\n```xml\n%s\n```", metadata))
+
+	case "get_dimension_values":
+		catalog, _ := callParams.Arguments["catalog"].(string)
+		dataset, _ := callParams.Arguments["dataset"].(string)
+		dimension, _ := callParams.Arguments["dimension"].(string)
+		
+		if catalog == "" || dataset == "" || dimension == "" {
+			return errorResponse("catalog, dataset, and dimension parameters are required")
+		}
+		
+		queryOpts := make(map[string]string)
+		values, err := client.GetDimensionValues(catalog, dataset, dimension, queryOpts)
+		if err != nil {
+			return errorResponse(fmt.Sprintf("Failed to get dimension values: %v", err))
+		}
+		
+		valuesJSON, _ := json.Marshal(values)
+		return successResponse(fmt.Sprintf("Found %d values for dimension '%s':\n\n```json\n%s\n```", 
+			len(values), dimension, string(valuesJSON)))
 	}
 
 	return errorResponse("Tool not found")
