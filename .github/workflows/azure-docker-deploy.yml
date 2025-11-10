@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY_NAME: 'mcpregistry'  # Set your ACR name (without .azurecr.io)
+  REGISTRY_NAME: 'roodhalsmcp'
   IMAGE_NAME: 'mcp-server'
-  RESOURCE_GROUP: 'mcp-rg'
-  CONTAINER_APP_NAME: 'mcp-server'
-  CONTAINER_APP_ENV: 'mcp-env'
+  RESOURCE_GROUP: 'Roodhals-PoC'
+  CONTAINER_APP_NAME: 'roodhals-mcp'
+  CONTAINER_APP_ENV: 'roodhals-mcp-env'
 
 jobs:
   build-and-deploy:
