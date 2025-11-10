@@ -139,7 +139,6 @@ func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 	// Check Accept header for Streamable HTTP compliance
 	acceptHeader := r.Header.Get("Accept")
 	supportsSSE := strings.Contains(acceptHeader, "text/event-stream")
-	supportsJSON := strings.Contains(acceptHeader, "application/json")
 
 	// Read request body
 	body, err := io.ReadAll(r.Body)
@@ -189,23 +188,43 @@ func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send response - use SSE if client supports it and it's a request (not notification)
+	// Send response
 	response := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
 		Result:  result,
 	}
 
-	// For Streamable HTTP: if client accepts SSE and this is a request, we CAN use SSE
-	// But for simplicity and stateless design, we'll just use JSON for now
-	// Copilot Studio should work with either
-	if supportsSSE && req.ID != nil && supportsJSON {
-		// Client supports both - use JSON for simplicity (stateless)
-		w.Header().Set("Content-Type", "application/json")
-	} else {
-		w.Header().Set("Content-Type", "application/json")
+	// For Streamable HTTP: if client supports SSE and this is a request, use SSE format
+	// This might be what Copilot Studio expects
+	if supportsSSE && req.ID != nil {
+		log.Printf("Sending response as SSE stream for request id=%v", req.ID)
+		
+		// Send as SSE
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		
+		// Marshal response to JSON
+		jsonData, err := json.Marshal(response)
+		if err != nil {
+			sendJSONRPCError(w, req.ID, -32603, "Internal error")
+			return
+		}
+		
+		// Send as SSE data event
+		fmt.Fprintf(w, "data: %s\n\n", jsonData)
+		
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		
+		log.Printf("SSE response sent and stream closed")
+		return
 	}
 	
+	// Fall back to JSON for notifications or if SSE not supported
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
