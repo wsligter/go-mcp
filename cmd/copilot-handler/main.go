@@ -41,9 +41,9 @@ type JSONRPCRequest struct {
 }
 
 type JSONRPCResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      interface{} `json:"id"`
-	Result  interface{} `json:"result,omitempty"`
+	JSONRPC string        `json:"jsonrpc"`
+	ID      interface{}   `json:"id"`
+	Result  interface{}   `json:"result,omitempty"`
 	Error   *JSONRPCError `json:"error,omitempty"`
 }
 
@@ -248,7 +248,7 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 		Name      string                 `json:"name"`
 		Arguments map[string]interface{} `json:"arguments"`
 	}
-	
+
 	if err := json.Unmarshal(params, &callParams); err != nil {
 		return map[string]interface{}{
 			"isError": true,
@@ -297,7 +297,7 @@ func handleResourcesRead(ctx context.Context, params json.RawMessage) interface{
 		URI string `json:"uri"`
 	}
 	json.Unmarshal(params, &readParams)
-	
+
 	result, _ := handleReadResourceRequest(ctx, mcp.ReadResourceParams{URI: readParams.URI})
 	return result
 }
