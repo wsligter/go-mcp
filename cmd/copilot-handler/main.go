@@ -206,12 +206,6 @@ func sendJSONRPCError(w http.ResponseWriter, id interface{}, code int, message s
 func handleInitialize(ctx context.Context, params json.RawMessage) interface{} {
 	log.Printf("Initialize called - returning capabilities and server info")
 	
-	// Get the tools list to include in capabilities
-	toolsList := handleToolsList(ctx, nil).(map[string]interface{})
-	tools := toolsList["tools"].([]map[string]interface{})
-	
-	log.Printf("Advertising %d tools in initialize response", len(tools))
-	
 	return map[string]interface{}{
 		"protocolVersion": "2024-11-05",
 		"capabilities": map[string]interface{}{
@@ -230,8 +224,7 @@ func handleInitialize(ctx context.Context, params json.RawMessage) interface{} {
 			"name":    serverName,
 			"version": serverVersion,
 		},
-		// Include tools directly in initialize response for Copilot Studio
-		"tools": tools,
+		"instructions": "This server provides access to CBS (Statistics Netherlands) Open Data API. Use get_catalogs to list available catalogs, query_datasets to search datasets, get_dimensions to explore dataset structure, and query_observations to retrieve statistical data.",
 	}
 }
 
