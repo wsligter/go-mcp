@@ -1,2 +1,23 @@
 .vscode
 handler
+
+# Go build artifacts
+copilot-handler
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# macOS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Logs / temp
+*.log
+tmp/

@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/dstotijn/go-mcp"
@@ -434,6 +435,36 @@ func handleToolsList(ctx context.Context, params json.RawMessage) interface{} {
 					"required": []string{"catalog", "dataset", "dimension"},
 				},
 			},
+			{
+				"name":        "resolve_dimension_value",
+				"description": "Resolve a natural language input (e.g., 'Netherlands', '2019', 'total') to concrete CBS dimension codes for a given dataset and dimension. Use this after get_dimensions to translate user-friendly values into the exact codes needed in OData filters for query_observations or get_observations.",
+				"inputSchema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"catalog": map[string]interface{}{
+							"type":        "string",
+							"description": "Catalog identifier (use 'CBS')",
+						},
+						"dataset": map[string]interface{}{
+							"type":        "string",
+							"description": "Dataset identifier (e.g., '03759ned')",
+						},
+						"dimension": map[string]interface{}{
+							"type":        "string",
+							"description": "Dimension identifier (e.g., 'RegioS', 'Perioden', 'Geslacht')",
+						},
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "Natural language or simple value to resolve (e.g., 'Netherlands', '2019', 'total')",
+						},
+						"maxCandidates": map[string]interface{}{
+							"type":        "integer",
+							"description": "Maximum number of candidate codes to return (default: 5)",
+						},
+					},
+					"required": []string{"catalog", "dataset", "dimension", "query"},
+				},
+			},
 		},
 	}
 }
@@ -502,7 +533,8 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 
 		datasets, totalCount, err := client.GetDatasetsWithQuery(catalog, queryOpts)
 		if err != nil {
-			return errorResponse(fmt.Sprintf("Failed to query datasets: %v", err))
+			log.Printf("query_datasets failed for catalog=%s options=%v: %v", catalog, queryOpts, err)
+			return successResponse(fmt.Sprintf("Unable to query datasets for catalog '%s' with the given search/filter options. This usually means the combination of search, filter, top/skip is invalid or the CBS API returned an error. Try simplifying the query: remove complex filters, reduce 'top', or search with a simpler term (for example, search='bevolking' and filter='Status ne 'Gediscontinueerd'').\n\nDetails: %v", catalog, err))
 		}
 
 		skip := 0
@@ -522,7 +554,8 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 
 		dimensions, err := client.GetDimensions(catalog, dataset)
 		if err != nil {
-			return errorResponse(fmt.Sprintf("Failed to get dimensions: %v", err))
+			log.Printf("get_dimensions failed for catalog=%s dataset=%s: %v", catalog, dataset, err)
+			return successResponse(fmt.Sprintf("Unable to retrieve dimensions for dataset '%s' in catalog '%s'. This usually means the dataset identifier is invalid or the CBS API returned an error. Verify the dataset ID from query_datasets and try again.\n\nDetails: %v", dataset, catalog, err))
 		}
 
 		return successResponse(FormatDimensions(dimensions))
@@ -551,7 +584,8 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 		path := fmt.Sprintf("/%s/%s/Observations", catalog, dataset)
 		result, err := client.ExecuteQuery(path, queryOpts)
 		if err != nil {
-			return errorResponse(fmt.Sprintf("Failed to query observations: %v", err))
+			log.Printf("query_observations failed for path=%s options=%v: %v", path, queryOpts, err)
+			return successResponse(fmt.Sprintf("Unable to query observations for dataset '%s'. This usually means the OData filter or select is invalid (for example, using a code that does not exist in this dataset). Use get_dimensions and resolve_dimension_value (or get_dimension_values) to discover valid dimension codes, then try a simpler filter such as:\n- Perioden eq 'VALID_PERIOD_CODE' and RegioS eq 'VALID_REGION_CODE'\n\nDetails: %v", dataset, err))
 		}
 
 		limit := 100
@@ -561,7 +595,8 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 
 		formatted, err := FormatObservations(result, limit)
 		if err != nil {
-			return errorResponse(fmt.Sprintf("Failed to format observations: %v", err))
+			log.Printf("query_observations formatting failed for dataset=%s: %v", dataset, err)
+			return successResponse(fmt.Sprintf("Observations were retrieved but could not be formatted as JSON. You can retry with a smaller 'top' value or a simpler filter to reduce the response size.\n\nDetails: %v", err))
 		}
 
 		return successResponse(formatted)
@@ -586,7 +621,8 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 
 		observations, err := client.GetObservations(catalog, dataset, filters)
 		if err != nil {
-			return errorResponse(fmt.Sprintf("Failed to get observations: %v", err))
+			log.Printf("get_observations failed for catalog=%s dataset=%s filters=%v: %v", catalog, dataset, filters, err)
+			return successResponse(fmt.Sprintf("Unable to retrieve observations for dataset '%s' with the current filters. This usually means one or more filter values are invalid. Use get_dimensions together with resolve_dimension_value (or get_dimension_values) to find valid codes, then try again.\n\nDetails: %v", dataset, err))
 		}
 
 		// Apply limit if specified
@@ -629,12 +665,157 @@ func handleToolsCall(ctx context.Context, params json.RawMessage) interface{} {
 		queryOpts := make(map[string]string)
 		values, err := client.GetDimensionValues(catalog, dataset, dimension, queryOpts)
 		if err != nil {
-			return errorResponse(fmt.Sprintf("Failed to get dimension values: %v", err))
+			// Do not surface this as an error to the model. Some datasets/dimensions simply
+			// do not expose a DimensionValues endpoint (CBS returns 404). In that case,
+			// guide the model to use get_dimensions + query_observations / get_observations
+			// instead of repeatedly calling this tool.
+			log.Printf("get_dimension_values failed for catalog=%s dataset=%s dimension=%s: %v", catalog, dataset, dimension, err)
+			guidance := fmt.Sprintf(
+				"Dimension values could not be retrieved for dataset '%s' (dimension '%s'). This often means the CBS API does not expose a DimensionValues endpoint for this dimension. Instead, use get_dimensions to inspect available dimensions and then query_observations or get_observations with appropriate OData filters (for example, using codes like Perioden eq '2022JJ00' for year 2022 and RegioS eq 'NL01' for the Netherlands).",
+				dataset,
+				dimension,
+			)
+			return successResponse(guidance)
 		}
 
 		valuesJSON, _ := json.Marshal(values)
 		return successResponse(fmt.Sprintf("Found %d values for dimension '%s':\n\n```json\n%s\n```",
 			len(values), dimension, string(valuesJSON)))
+
+	case "resolve_dimension_value":
+		catalog, _ := callParams.Arguments["catalog"].(string)
+		dataset, _ := callParams.Arguments["dataset"].(string)
+		dimension, _ := callParams.Arguments["dimension"].(string)
+		query, _ := callParams.Arguments["query"].(string)
+
+		if catalog == "" || dataset == "" || dimension == "" || query == "" {
+			return errorResponse("catalog, dataset, dimension, and query parameters are required")
+		}
+
+		maxCandidates := 5
+		if maxArg, ok := callParams.Arguments["maxCandidates"].(float64); ok && maxArg > 0 {
+			maxCandidates = int(maxArg)
+		}
+
+		// Fetch all dimension values via CBS API.
+		values, err := client.GetDimensionValues(catalog, dataset, dimension, map[string]string{})
+		if err != nil {
+			log.Printf("resolve_dimension_value: failed to get dimension values for catalog=%s dataset=%s dimension=%s: %v", catalog, dataset, dimension, err)
+			return successResponse(fmt.Sprintf("Dimension values could not be loaded for dataset '%s' (dimension '%s'). This often means the DimensionValues endpoint is not available for this dataset or CBS returned an error. Use get_dimension_values directly (if available) or fall back to get_dimensions plus manual inspection of sample observations to infer valid codes.\n\nDetails: %v", dataset, dimension, err))
+		}
+
+		q := strings.ToLower(strings.TrimSpace(query))
+		if q == "" {
+			return errorResponse("query parameter must not be empty")
+		}
+
+		// Build a set of search keys to support both English and Dutch terms.
+		searchKeys := []string{q}
+		switch q {
+		case "netherlands", "the netherlands":
+			searchKeys = append(searchKeys, "nederland", "nl")
+		case "nederland":
+			searchKeys = append(searchKeys, "netherlands", "nl")
+		case "total", "all", "overall":
+			searchKeys = append(searchKeys, "totaal")
+		case "totaal":
+			searchKeys = append(searchKeys, "total")
+		case "male", "man", "men":
+			searchKeys = append(searchKeys, "man", "mannen")
+		case "female", "woman", "women":
+			searchKeys = append(searchKeys, "vrouw", "vrouwen")
+		case "netherlands total", "nederland totaal":
+			searchKeys = append(searchKeys, "nederland", "netherlands", "totaal")
+		}
+
+		// Score each value based on how well it matches any of the search keys.
+		type candidate struct {
+			code  string
+			label string
+			score int
+			raw   map[string]any
+		}
+
+		var candidates []candidate
+
+		for _, val := range values {
+			code := ""
+			label := ""
+
+			// Heuristic: common field names in CBS dimension value tables.
+			if v, ok := val["Key"].(string); ok {
+				code = v
+			}
+			if v, ok := val["Code"].(string); ok && code == "" {
+				code = v
+			}
+			if v, ok := val["Identifier"].(string); ok && code == "" {
+				code = v
+			}
+			if v, ok := val["Title"].(string); ok {
+				label = v
+			}
+			if v, ok := val["Description"].(string); ok && label == "" {
+				label = v
+			}
+
+			// Build a text blob for matching.
+			combined := strings.ToLower(code + " " + label)
+			if combined == " " {
+				continue
+			}
+
+			// Simple scoring: exact, prefix, contains for any search key.
+			score := 0
+			for _, sk := range searchKeys {
+				if combined == sk {
+					score += 100
+				}
+				if strings.Contains(combined, sk) {
+					score += 50
+				}
+				if strings.HasPrefix(combined, sk) {
+					score += 20
+				}
+			}
+			if score == 0 {
+				continue
+			}
+
+			candidates = append(candidates, candidate{
+				code:  code,
+				label: label,
+				score: score,
+				raw:   val,
+			})
+		}
+
+		if len(candidates) == 0 {
+			return successResponse(fmt.Sprintf("No matching dimension values found for query '%s' in dimension '%s'. Use get_dimension_values to inspect all available codes and then construct an OData filter manually.", query, dimension))
+		}
+
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].score > candidates[j].score
+		})
+
+		if len(candidates) > maxCandidates {
+			candidates = candidates[:maxCandidates]
+		}
+
+		// Build a friendly response describing the best matches and how to use them.
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("Resolved query '%s' for dimension '%s' in dataset '%s'. Top candidate codes:\n\n", query, dimension, dataset))
+		for i, c := range candidates {
+			b.WriteString(fmt.Sprintf("%d. Code: `%s`", i+1, c.code))
+			if c.label != "" {
+				b.WriteString(fmt.Sprintf(" – %s", c.label))
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\nUse these codes in OData filters for query_observations or get_observations, for example:\n")
+		b.WriteString(fmt.Sprintf("- %s eq '%s'\n", dimension, candidates[0].code))
+
+		return successResponse(b.String())
 	}
 
 	return errorResponse("Tool not found")
